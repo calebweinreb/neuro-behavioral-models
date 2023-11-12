@@ -4,6 +4,7 @@ import jax.random as jr
 from jax.scipy.stats.norm import logpdf as normal_logpdf
 from jaxtyping import Array, Float, Int, Bool
 from typing import Tuple
+from functools import partial
 
 from neuro_behavioral_models.util import (
     sample_inv_gamma,
@@ -219,6 +220,7 @@ def resample_trans_probs(
     return trans_probs
 
 
+@partial(jax.jit, static_argnums=(3,))
 def resample_params(
     seed: jr.PRNGKey,
     data: dict,
@@ -273,20 +275,23 @@ def resample_params(
     return params
 
 
+@partial(jax.jit, static_argnames=("ignore_neural_obs",))
 def resample_states(
     seed: jr.PRNGKey,
     data: dict,
     params: dict,
     ignore_neural_obs: Bool = False,
-) -> Float[Array, "n_sessions n_timesteps"]:
+) -> Tuple[Float, Float[Array, "n_sessions n_timesteps"]]:
     """Resample hidden states from their posterior distribution.
 
     Args:
         seed: random seed
         data: data dictionary
         params: parameters dictionary
+        ignore_neural_obs: whether to ignore neural observations
 
     Returns:
+        log_prob: log probability of states
         states: hidden states
     """
     n_sessions = data["neural_obs"].shape[0]
@@ -304,13 +309,13 @@ def resample_states(
             .sum(-1)
             .transpose((0, 2, 1))
         )
-    _, states = jax.vmap(sample_hmm_states, in_axes=(0, 0, None, 0))(
+    log_prob, states = jax.vmap(sample_hmm_states, in_axes=(0, 0, None, 0))(
         jr.split(seed, n_sessions),
         log_likelihoods,
         params["trans_probs"],
         data["mask"],
     )
-    return states
+    return log_prob, states
 
 
 def init_model(seed, data, hypparams):
@@ -322,12 +327,12 @@ def init_model(seed, data, hypparams):
     return seeds[2], states, params
 
 
-def resample_model(seed, data, states, params, hypparams):
+def resample_model(seed, data, states, params, hypparams, ignore_neural_obs=False):
     """Resample model parameters and latent states."""
     seeds = jr.split(seed, 3)
     params = resample_params(seeds[0], data, states, hypparams)
-    states = resample_states(seeds[1], data, params)
-    return seeds[2], states, params
+    log_prob, states = resample_states(seeds[1], data, params, ignore_neural_obs)
+    return seeds[2], states, params, log_prob
 
 
 def simulate(seed, params, n_timesteps, n_syllables_per_timestep):

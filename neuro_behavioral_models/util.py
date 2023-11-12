@@ -168,7 +168,7 @@ def compare_states(
         accuracy: proportion of correct labels (after optimal permutation)
     """
     confusion = jnp.zeros((n_states, n_states)).at[pred_states, true_states].add(1)
-    optimal_perm = linear_sum_assignment(-confusion)[1]
+    optimal_perm = linear_sum_assignment(-confusion.T)[1]
     accuracy = confusion[optimal_perm, jnp.arange(n_states)].sum() / true_states.size
     confusion = confusion / confusion.sum(axis=1, keepdims=True)
     return confusion, optimal_perm, accuracy
