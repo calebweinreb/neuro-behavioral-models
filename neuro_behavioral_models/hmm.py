@@ -99,7 +99,7 @@ def init_params(
     }
 
 
-# @partial(jax.jit, static_argnums=(4,))
+@partial(jax.jit, static_argnums=(4,))
 def resample_neural_params(
     seed: jr.PRNGKey,
     neural_obs: Float[Array, "n_sessions n_timesteps n_features"],
@@ -274,6 +274,7 @@ def resample_params(
     return params
 
 
+@partial(jax.jit, static_argnames=("ignore_neural_obs",))
 def resample_states(
     seed: jr.PRNGKey,
     data: dict,
