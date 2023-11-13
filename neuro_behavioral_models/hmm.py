@@ -294,8 +294,9 @@ def resample_states(
     """
 
     log_likelihoods = jax.lax.map(
-        lambda probs: multinomial_log_prob(probs, data["behavior_obs"])
-    )(params["behavior_probs"]).transpose((1, 2, 0))
+        lambda probs: multinomial_log_prob(probs, data["behavior_obs"]),
+        params["behavior_probs"],
+    ).transpose((1, 2, 0))
 
     if not ignore_neural_obs:
         log_likelihoods += (
