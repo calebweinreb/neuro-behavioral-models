@@ -292,10 +292,10 @@ def resample_states(
         log_prob: log probability of states
         states: hidden states
     """
-    n_sessions = data["neural_obs"].shape[0]
-    log_likelihoods = jax.vmap(multinomial_log_prob, in_axes=(0, None))(
-        params["behavior_probs"], data["behavior_obs"]
-    ).transpose((1, 2, 0))
+
+    log_likelihoods = jax.lax.map(
+        lambda probs: multinomial_log_prob(probs, data["behavior_obs"])
+    )(params["behavior_probs"]).transpose((1, 2, 0))
 
     if not ignore_neural_obs:
         log_likelihoods += (
@@ -307,6 +307,8 @@ def resample_states(
             .sum(-1)
             .transpose((0, 2, 1))
         )
+
+    n_sessions = data["neural_obs"].shape[0]
     log_prob, states = jax.vmap(sample_hmm_states, in_axes=(0, 0, None, 0))(
         jr.split(seed, n_sessions),
         log_likelihoods,
