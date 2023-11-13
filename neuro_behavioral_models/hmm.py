@@ -318,12 +318,12 @@ def resample_states(
     return log_prob.sum(), states
 
 
-def init_model(seed, data, hypparams):
+def init_model(seed, data, hypparams, ignore_neural_obs=True):
     """Initialize model parameters and latent states."""
     seeds = jr.split(seed, 3)
     n_sessions = data["neural_obs"].shape[0]
     params = init_params(seeds[0], hypparams, n_sessions)
-    log_prob, states = resample_states(seeds[1], data, params)
+    log_prob, states = resample_states(seeds[1], data, params, ignore_neural_obs)
     return seeds[2], states, params, log_prob
 
 
