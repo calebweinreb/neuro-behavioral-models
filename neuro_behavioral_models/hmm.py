@@ -99,12 +99,13 @@ def init_params(
     }
 
 
+# @partial(jax.jit, static_argnums=(4,))
 def resample_neural_params(
     seed: jr.PRNGKey,
     neural_obs: Float[Array, "n_sessions n_timesteps n_features"],
     mask: Int[Array, "n_sessions n_timesteps"],
-    states: Float[Array, "n_sessions n_timesteps"],
-    n_states: Int,
+    states: Int[Array, "n_sessions n_timesteps"],
+    n_states: int,
     lambda_: Float,
     alpha: Float,
     beta: Float,
@@ -130,10 +131,9 @@ def resample_neural_params(
     """
     n_sessions, _, n_features = neural_obs.shape
 
-    masks = (
-        jnp.stack([states == i for i in range(n_states)], axis=1)[:, :, :, na]
-        * mask[:, na, :, na]
-    )
+    masks = jnp.eye(n_states)[states].transpose((0, 2, 1))[:, :, :, na]
+    masks *= mask[:, na, :, na]
+
     neural_sample_means = (neural_obs[:, na] * masks).sum(2) / masks.sum(2)
     centered_obs = neural_obs[:, na] - neural_sample_means[:, :, na]
     neural_sample_vars = (centered_obs**2 * masks).sum(2) / masks.sum(2)
@@ -155,12 +155,13 @@ def resample_neural_params(
     return neural_means, neural_vars
 
 
+@partial(jax.jit, static_argnums=(4,))
 def resample_behavior_params(
     seed: jr.PRNGKey,
     behavior_obs: Int[Array, "n_sessions n_timesteps n_syllables"],
     mask: Int[Array, "n_sessions n_timesteps"],
-    states: Float[Array, "n_sessions n_timesteps"],
-    n_states: Int,
+    states: Int[Array, "n_sessions n_timesteps"],
+    n_states: int,
     beta: Float,
 ) -> Float[Array, "n_states n_syllables"]:
     """Resample behavior parameters from their posterior distribution.
@@ -176,10 +177,9 @@ def resample_behavior_params(
     Returns:
         behavior_probs: posterior behavior probabilities
     """
-    masks = (
-        jnp.stack([states == i for i in range(n_states)])[:, :, :, na]
-        * mask[na, :, :, na]
-    )
+    masks = jnp.eye(n_states)[states].transpose((2, 0, 1))[:, :, :, na]
+    masks *= mask[na, :, :, na]
+
     behavior_sample_counts = (behavior_obs[na] * masks).sum((1, 2))
     behavior_probs = jax.vmap(jr.dirichlet)(
         jr.split(seed, n_states),
@@ -188,11 +188,12 @@ def resample_behavior_params(
     return behavior_probs
 
 
+@partial(jax.jit, static_argnums=(3,))
 def resample_trans_probs(
     seed: jr.PRNGKey,
     mask: Int[Array, "n_sessions n_timesteps"],
-    states: Float[Array, "n_sessions n_timesteps"],
-    n_states: Int,
+    states: Int[Array, "n_sessions n_timesteps"],
+    n_states: int,
     beta: Float,
     kappa: Float,
 ) -> Float[Array, "n_states n_states"]:
@@ -220,11 +221,10 @@ def resample_trans_probs(
     return trans_probs
 
 
-@partial(jax.jit, static_argnums=(3,))
 def resample_params(
     seed: jr.PRNGKey,
     data: dict,
-    states: Float[Array, "n_sessions n_timesteps"],
+    states: Int[Array, "n_sessions n_timesteps"],
     hypparams: dict,
 ) -> dict:
     """Resample parameters from their posterior distribution.
@@ -239,7 +239,6 @@ def resample_params(
         params: parameters dictionary
     """
     seeds = jr.split(seed, 3)
-
     neural_means, neural_vars = resample_neural_params(
         seeds[0],
         data["neural_obs"],
@@ -275,7 +274,6 @@ def resample_params(
     return params
 
 
-@partial(jax.jit, static_argnames=("ignore_neural_obs",))
 def resample_states(
     seed: jr.PRNGKey,
     data: dict,
@@ -315,7 +313,7 @@ def resample_states(
         params["trans_probs"],
         data["mask"],
     )
-    return log_prob, states
+    return log_prob.sum(), states
 
 
 def init_model(seed, data, hypparams):
@@ -323,8 +321,8 @@ def init_model(seed, data, hypparams):
     seeds = jr.split(seed, 3)
     n_sessions = data["neural_obs"].shape[0]
     params = init_params(seeds[0], hypparams, n_sessions)
-    states = resample_states(seeds[1], data, params)
-    return seeds[2], states, params
+    log_prob, states = resample_states(seeds[1], data, params)
+    return seeds[2], states, params, log_prob
 
 
 def resample_model(seed, data, states, params, hypparams, ignore_neural_obs=False):
