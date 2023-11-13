@@ -324,10 +324,11 @@ def init_model(seed, data, hypparams, states=None, ignore_neural_obs=True):
     seeds = jr.split(seed, 3)
     if states is not None:
         params = resample_params(seeds[0], data, states, hypparams)
+        log_prob, _ = resample_states(seeds[1], data, params, ignore_neural_obs)
     else:
         params = init_params(seeds[0], hypparams, data["neural_obs"].shape[0])
-        _, states = resample_states(seeds[1], data, params, ignore_neural_obs)
-    return seeds[2], states, params
+        log_prob, states = resample_states(seeds[1], data, params, ignore_neural_obs)
+    return seeds[2], states, params, log_prob
 
 
 def resample_model(seed, data, states, params, hypparams, ignore_neural_obs=False):
