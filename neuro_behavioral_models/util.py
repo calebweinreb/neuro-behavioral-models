@@ -113,7 +113,6 @@ def sample_hmm_states(
     """
     n_states = trans_probs.shape[0]
     initial_distribution = jnp.ones(n_states) / n_states
-    log_likelihoods -= logsumexp(log_likelihoods, axis=-1, keepdims=True)
 
     masked_log_likelihoods = log_likelihoods * mask[:, na]
     L, z = hmm_posterior_sample(
