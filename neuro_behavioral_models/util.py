@@ -4,7 +4,6 @@ import jax
 import optax
 import tqdm
 from tensorflow_probability.substrates.jax import distributions as tfd
-
 from jaxtyping import Array, Float, Int
 from typing import Tuple
 from scipy.optimize import linear_sum_assignment
