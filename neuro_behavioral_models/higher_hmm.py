@@ -13,6 +13,7 @@ from dynamax.hidden_markov_model.inference import (
     hmm_smoother,
     hmm_posterior_mode,
     hmm_posterior_sample,
+    parallel_hmm_posterior_sample,
 )
 
 from .util import sample_hmc, simulate_hmm_states, gradient_descent, remove_dof, add_dof
@@ -138,11 +139,12 @@ def log_joint_prob(
     return obs_log_prob + log_params_prob(params, hypparams)
 
 
-@jax.jit
+@partial(jax.jit, static_argnums=(3,))
 def resample_states(
     seed: Float[Array, "2"],
     data: dict,
     params: dict,
+    parallel: bool = False,
 ) -> Tuple[Int[Array, "n_sessions n_timesteps"], Float]:
     """Resample hidden states from their posterior distribution.
 
@@ -150,7 +152,7 @@ def resample_states(
         seed: random seed
         data: data dictionary
         params: parameters dictionary
-        hypparams: hyperparameters dictionary
+        parallel: whether to use parallel message passing
 
     Returns:
         states: resampled hidden states
@@ -159,9 +161,8 @@ def resample_states(
     n_states = params["trans_probs"].shape[0]
     seeds = jr.split(seed, data["syllables"].shape[0])
 
-    marginal_logliks, states = jax.vmap(
-        hmm_posterior_sample, in_axes=(0, None, None, 0)
-    )(
+    sample_fn = parallel_hmm_posterior_sample if parallel else hmm_posterior_sample
+    marginal_logliks, states = jax.vmap(sample_fn, in_axes=(0, None, None, 0))(
         seeds,
         jnp.ones(n_states) / n_states,
         softmax(add_dof(params["trans_probs"], 1), axis=1),
@@ -177,6 +178,7 @@ def fit_gibbs(
     init_states: Int[Array, "n_sessions n_timesteps"] = None,
     seed: Float[Array, "2"] = jr.PRNGKey(0),
     num_iters: Int = 100,
+    parallel: bool = False,
 ) -> Tuple[dict, Float[Array, "num_iters"]]:
     """Fit a model using Gibbs sampling.
 
@@ -187,13 +189,14 @@ def fit_gibbs(
         init_states: initial hidden states (optional)
         seed: random seed
         num_iters: number of iterations
+        parallel: whether to use parallel message passing
 
     Returns:
         params: fitted parameters dictionary
         log_joints: log joint probability of the data and parameters recorded at each iteration
     """
     if init_states is None:
-        states, _ = resample_states(seed, data, init_params)
+        states, _ = resample_states(seed, data, init_params, parallel)
 
     log_joints = []
     params = init_params
