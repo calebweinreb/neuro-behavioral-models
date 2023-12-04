@@ -8,7 +8,7 @@ import tqdm
 import time
 from typing import Tuple
 from functools import partial
-from dynamax.hidden_markov_model.inference import (
+from dynamax.hidden_markov_model import (
     hmm_filter,
     hmm_smoother,
     hmm_posterior_mode,
