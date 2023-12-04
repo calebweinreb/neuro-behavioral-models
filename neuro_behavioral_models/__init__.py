@@ -1,2 +1,3 @@
 from .util import *
-from . import hmm
+from . import categorical_gaussian_hmm
+from . import higher_hmm

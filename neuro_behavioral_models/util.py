@@ -1,43 +1,38 @@
 import jax.numpy as jnp
 import jax.random as jr
 import jax
-from jax.scipy.special import gammaln, logsumexp
+import optax
+import tqdm
+import tensorflow_probability.substrates.jax as tfp
 from tensorflow_probability.substrates.jax import distributions as tfd
-from dynamax.hidden_markov_model.inference import hmm_posterior_sample
-from jaxtyping import Array, Float, Int
-from typing import Tuple
+from jaxtyping import Array, Float, Int, PyTree, Bool
+from typing import Tuple, Union, Callable
 from scipy.optimize import linear_sum_assignment
-
 
 na = jnp.newaxis
 
 
-def sample_multinomial(
-    seed: jr.PRNGKey,
-    n: Int,
-    p: Float[jnp.ndarray, "n_categories"],
-) -> Int[Array, "n_categories"]:
-    return tfd.Multinomial(n, probs=p).sample(seed=seed)
+@jax.vmap
+def logits_to_probs(
+    logits: Float[Array, "n_categories-1"]
+) -> Float[Array, "n_categories"]:
+    """Convert logits to probabilities."""
+    logits = jnp.concatenate([logits, jnp.zeros(1)])
+    return jax.nn.softmax(logits)
 
 
-def sample_gamma(
-    seed: jr.PRNGKey,
-    a: Float,
-    b: Float,
-) -> Float:
-    return jr.gamma(seed, a) / b
-
-
-def sample_inv_gamma(
-    seed: jr.PRNGKey,
-    a: Float,
-    b: Float,
-) -> Float:
-    return 1.0 / sample_gamma(seed, a, b)
+@jax.vmap
+def probs_to_logits(
+    probs: Float[Array, "n_categories"],
+    pseudo_count: Float = 1e-8,
+) -> Float[Array, "n_categories-1"]:
+    """Convert probabilities to logits."""
+    log_probs = jnp.log(probs + pseudo_count)
+    return log_probs[:-1] - log_probs[-1]
 
 
 def normal_inverse_gamma_posterior(
-    seed: jr.PRNGKey,
+    seed: Float[Array, "2"],
     mean: Float,
     sigmasq: Float,
     n: Int,
@@ -72,58 +67,93 @@ def normal_inverse_gamma_posterior(
     return mu, sigma
 
 
-def multinomial_log_prob(
-    probs: Float[Array, "n_categories"],
-    counts: Int[Array, "... n_categories"],
-) -> Float[Array, "..."]:
+def remove_dof(arr, axis=0):
+    """Remove degrees of freedom from array. Values along the specified axis are
+    shifted such that the final element is zero and then truncated.
     """
-    Compute the log probability of counts in a multinomial distribution.
+    arr = jnp.moveaxis(arr, axis, 0)
+    arr = arr[:-1] - arr[-1]
+    arr = jnp.moveaxis(arr, 0, axis)
+    return arr
+
+
+def add_dof(arr, axis=0):
+    """Inverts `remove_dof` by adding a zero element to the end of the array
+    along the specified axis and then shifting values along that axis so that
+    the mean is zero.
+    """
+    arr = jnp.moveaxis(arr, axis, 0)
+    arr = jnp.concatenate([arr, jnp.zeros_like(arr[:1])], axis=0)
+    arr = arr - arr.mean(axis=0, keepdims=True)
+    arr = jnp.moveaxis(arr, 0, axis)
+    return arr
+
+
+def gradient_descent(loss_fn, init_params, learning_rate=1e-3, num_iters=100):
+    """
+    Run gradient descent to minimize a loss function.
 
     Args:
-        probs: Probabilities for each category.
-        counts: Observed counts for each category, with arbitrary batch dimensions.
+        loss_fn: Objective function.
+        init_params: Initial value of parameters to be estimated.
+        optimizer: Optimizer.
+        num_iters: Number of iterations.
 
     Returns:
-        Log probabilities with the same batch dimensions as counts.
+        params: Optimized parameters.
+        losses: Losses recorded at each epoch.
     """
-    return (
-        gammaln(counts.sum(-1) + 1)
-        - gammaln(counts + 1).sum(-1)
-        + (counts * jnp.log(probs)).sum(-1)
-    )
+    optimizer = optax.adam(learning_rate)
+    opt_state = optimizer.init(init_params)
+    loss_grad_fn = jax.value_and_grad(loss_fn)
+
+    @jax.jit
+    def train_step(params, opt_state):
+        loss, grads = loss_grad_fn(params)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
+        return params, opt_state, loss
+
+    losses = []
+    params = init_params
+    with tqdm.trange(num_iters) as pbar:
+        for i in pbar:
+            params, opt_state, loss = train_step(params, opt_state)
+            losses.append(loss.item())
+            pbar.set_postfix({"loss": loss.item()})
+
+    return params, jnp.array(losses)
 
 
-def sample_hmm_states(
-    seed: jr.PRNGKey,
-    log_likelihoods: Float[Array, "n_timesteps n_states"],
-    trans_probs: Float[Array, "n_states n_states"],
-    mask: Int[Array, "n_timesteps"],
-) -> Tuple[Float, Int[Array, "n_timesteps"]]:
-    """Sample state sequences in a Markov chain.
+def sample_multinomial(
+    seed: Float[Array, "2"],
+    n: Int,
+    p: Float[jnp.ndarray, "n_categories"],
+) -> Int[Array, "n_categories"]:
+    return tfd.Multinomial(n, probs=p).sample(seed=seed)
 
-    Args:
-        seed: random seed
-        log_likelihoods: log likelihoods of observations given states
-        trans_probs: transition probabilities between states
-        mask: indicates which observations are valid
 
-    Returns:
-        L: log probability of the sampled state sequence
-        z: sampled state sequence
-    """
-    n_states = trans_probs.shape[0]
-    initial_distribution = jnp.ones(n_states) / n_states
+def sample_gamma(
+    seed: Float[Array, "2"],
+    a: Float,
+    b: Float,
+) -> Float:
+    return jr.gamma(seed, a) / b
 
-    masked_log_likelihoods = log_likelihoods * mask[:, na]
-    L, z = hmm_posterior_sample(
-        seed, initial_distribution, trans_probs, masked_log_likelihoods
-    )
-    return L, z
+
+def sample_inv_gamma(
+    seed: Float[Array, "2"],
+    a: Float,
+    b: Float,
+) -> Float:
+    return 1.0 / sample_gamma(seed, a, b)
 
 
 def simulate_hmm_states(
-    seed: jr.PRNGKey,
-    trans_probs: Float[Array, "n_states n_states"],
+    seed: Float[Array, "2"],
+    trans_probs: Union[
+        Float[Array, "n_states n_states"], Float[Array, "n_timesteps n_states n_states"]
+    ],
     n_timesteps: Int,
 ) -> Int[Array, "n_timesteps"]:
     """Simulate a state sequence from in Markov chain.
@@ -138,14 +168,17 @@ def simulate_hmm_states(
     """
     seeds = jr.split(seed, n_timesteps + 1)
     n_states = trans_probs.shape[0]
+    if trans_probs.ndim == 2:
+        trans_probs = jnp.repeat(trans_probs[na, ...], n_timesteps, axis=0)
     log_trans_probs = jnp.log(trans_probs)
     init_state = jr.categorical(seeds[0], jnp.ones(n_states) / n_states)
 
-    def step(state, seed):
-        next_state = jr.categorical(seed, log_trans_probs[state])
+    def step(state, args):
+        seed, logT = args
+        next_state = jr.categorical(seed, logT[state])
         return next_state, next_state
 
-    _, states = jax.lax.scan(step, init_state, seeds[1:])
+    _, states = jax.lax.scan(step, init_state, (seeds[1:], log_trans_probs))
     return states
 
 
@@ -171,3 +204,30 @@ def compare_states(
     accuracy = confusion[optimal_perm, jnp.arange(n_states)].sum() / true_states.size
     confusion = confusion / confusion.sum(axis=1, keepdims=True)
     return confusion, optimal_perm, accuracy
+
+
+def sample_hmc(
+    seed: Float[Array, "2"],
+    log_prob_fn: Callable,
+    init_params: PyTree,
+    num_leapfrog_steps: Int = 3,
+    step_size: Float = 0.001,
+    num_results: Int = 1,
+    num_burnin_steps: Int = 100,
+) -> Tuple[PyTree, PyTree]:
+    """Sample using Hamiltonian Monte Carlo."""
+    hmc_kernel = tfp.mcmc.HamiltonianMonteCarlo(
+        target_log_prob_fn=log_prob_fn,
+        step_size=step_size,
+        num_leapfrog_steps=num_leapfrog_steps,
+    )
+    params, _, kernel_state = tfp.mcmc.sample_chain(
+        num_results=num_results,
+        num_burnin_steps=num_burnin_steps,
+        current_state=init_params,
+        kernel=hmc_kernel,
+        seed=seed,
+        trace_fn=None,
+        return_final_kernel_results=True,
+    )
+    return params, kernel_state
