@@ -203,7 +203,7 @@ def fit_gibbs(
     for _ in tqdm.trange(num_iters):
         seed, subseed = jr.split(seed)
         params = resample_params(subseed, data, states, hypparams)
-        states, marginal_loglik = resample_states(seed, data, params)
+        states, marginal_loglik = resample_states(seed, data, params, parallel)
         log_joints.append(marginal_loglik + log_params_prob(params, hypparams))
     return params, jnp.array(log_joints)
 
