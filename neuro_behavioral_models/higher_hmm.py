@@ -16,7 +16,13 @@ from dynamax.hidden_markov_model import (
     parallel_hmm_posterior_sample,
 )
 
-from .util import sample_hmc, simulate_hmm_states, gradient_descent, remove_dof, add_dof
+from .util import (
+    simulate_hmm_states,
+    gradient_descent,
+    remove_dof,
+    add_dof,
+    sample_laplace,
+)
 
 na = jnp.newaxis
 
@@ -205,7 +211,7 @@ def fit_gibbs(
         params = resample_params(subseed, data, states, hypparams)
         states, marginal_loglik = resample_states(seed, data, params, parallel)
         log_joints.append(marginal_loglik + log_params_prob(params, hypparams))
-    return params, jnp.array(log_joints)
+    return params, states, jnp.array(log_joints)
 
 
 def initialize_params(
@@ -376,8 +382,6 @@ def resample_params(
         hypparams["n_syllables"],
         hypparams["emission_base_sigma"],
         hypparams["emission_biases_sigma"],
-        hypparams["hmc_num_leapfrog_steps"],
-        hypparams["hmc_step_size"],
     )
     trans_probs = resample_trans_probs(
         seeds[2],
@@ -395,7 +399,7 @@ def resample_params(
     return params
 
 
-@partial(jax.jit, static_argnums=(4, 5, 8))
+@partial(jax.jit, static_argnums=(4, 5))
 def resample_emission_params(
     seed: Float[Array, "2"],
     syllables: Int[Array, "n_sessions n_timesteps"],
@@ -405,8 +409,6 @@ def resample_emission_params(
     n_syllables: int,
     emission_base_sigma: Float,
     emission_biases_sigma: Float,
-    num_leapfrog_steps: Int = 3,
-    step_size: Float = 0.001,
 ) -> Tuple[
     Float[Array, "n_syllables n_syllables-1"], Float[Array, "n_states n_syllables-1"]
 ]:
@@ -421,9 +423,6 @@ def resample_emission_params(
         n_syllables: number of syllables
         emission_base_sigma: emission base standard deviation
         emission_biases_sigma: emission biases standard deviation
-        num_leapfrog_steps: number of leapfrog steps for HMC
-        step_size: step size for HMC
-        chain_length: length of HMC chain
 
     Returns:
         emission_base: posterior emission base parameters
@@ -435,7 +434,8 @@ def resample_emission_params(
         .add(mask[:, 1:])
     )
 
-    def log_prob_fn(emission_base, emission_biases):
+    def log_prob_fn(args):
+        emission_base, emission_biases = args
         syllable_trans_probs = get_syllable_trans_probs(emission_base, emission_biases)
 
         emission_base = add_dof(emission_base, 1)
@@ -447,12 +447,9 @@ def resample_emission_params(
         syllables_log_prob = (jnp.log(syllable_trans_probs) * sufficient_stats).sum()
         return prior_log_prob + syllables_log_prob
 
-    init_emission_params = estimate_emission_params(sufficient_stats)
-    hmc_sample, kernel = sample_hmc(
-        seed, log_prob_fn, init_emission_params, num_leapfrog_steps, step_size, 1
+    emission_base, emission_biases = sample_laplace(
+        seed, log_prob_fn, estimate_emission_params(sufficient_stats)
     )
-    emission_base = hmc_sample[0][0]
-    emission_biases = hmc_sample[1][0]
     return emission_base, emission_biases
 
 

@@ -2,12 +2,14 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax
 import optax
+import jaxopt
 import tqdm
-import tensorflow_probability.substrates.jax as tfp
 from tensorflow_probability.substrates.jax import distributions as tfd
 from jaxtyping import Array, Float, Int, PyTree, Bool
 from typing import Tuple, Union, Callable
 from scipy.optimize import linear_sum_assignment
+from functools import partial
+from jax_moseq.utils import psd_inv
 
 na = jnp.newaxis
 
@@ -231,3 +233,27 @@ def sample_hmc(
         return_final_kernel_results=True,
     )
     return params, kernel_state
+
+
+@partial(jax.jit, static_argnums=(1,))
+def sample_laplace(
+    seed: Float[Array, "2"],
+    log_prob_fn: Callable,
+    init_params: PyTree,
+) -> PyTree:
+    """Sample using Laplace approximation."""
+
+    # find the mode of the posterior
+    solver = jaxopt.LBFGS(fun=lambda x: -log_prob_fn(x))
+    opt = solver.run(init_params)
+    mode = opt.params
+
+    # calculate covariance matrix from hessian at mode
+    mode, unravel_fn = jax.flatten_util.ravel_pytree(mode)
+    ll_fn = lambda x: log_prob_fn(unravel_fn(x))
+    hessian_at_mode = jax.hessian(ll_fn)(mode)
+    covariance_matrix = psd_inv(-hessian_at_mode, diagonal_boost=1e-2)
+
+    # sample from laplace approximation
+    x = jr.multivariate_normal(seed, mean=mode, cov=covariance_matrix)
+    return unravel_fn(x)
