@@ -205,7 +205,7 @@ def fit_gibbs(
         params = resample_params(subseed, data, states, hypparams)
         states, marginal_loglik = resample_states(seed, data, params, parallel)
         log_joints.append(marginal_loglik + log_params_prob(params, hypparams))
-    return params, jnp.array(log_joints)
+    return params, states, jnp.array(log_joints)
 
 
 def initialize_params(
