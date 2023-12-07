@@ -69,24 +69,30 @@ def normal_inverse_gamma_posterior(
     return mu, sigma
 
 
-def remove_dof(arr, axis=0):
-    """Remove degrees of freedom from array. Values along the specified axis are
-    shifted such that the final element is zero and then truncated.
-    """
+def center_embedding(k: int) -> Float[Array, "k k-1"]:
+    """Generate an orthonormal matrix that embeds R^(k-1) into the space of 0-sum vectors in R^k."""
+    # using numpy.linalg.svd because jax version crashes on windows
+    return jnp.linalg.svd(jnp.eye(k) - jnp.ones((k, k)) / k)[0][:, :-1]
+
+
+def lower_dim(arr, axis=0):
+    """Lower dimension in specified axis by projecting onto the space of 0-sum vectors."""
     arr = jnp.moveaxis(arr, axis, 0)
-    arr = arr[:-1] - arr[-1]
+    k, *shape = arr.shape
+    arr = arr.reshape(k, -1)
+    arr = center_embedding(k).T @ arr
+    arr = arr.reshape(k - 1, *shape)
     arr = jnp.moveaxis(arr, 0, axis)
     return arr
 
 
-def add_dof(arr, axis=0):
-    """Inverts `remove_dof` by adding a zero element to the end of the array
-    along the specified axis and then shifting values along that axis so that
-    the mean is zero.
-    """
+def raise_dim(arr, axis=0):
+    """Raise dimension in specified axis by embedding into the space of 0-sum vectors."""
     arr = jnp.moveaxis(arr, axis, 0)
-    arr = jnp.concatenate([arr, jnp.zeros_like(arr[:1])], axis=0)
-    arr = arr - arr.mean(axis=0, keepdims=True)
+    k, *shape = arr.shape
+    arr = arr.reshape(k, -1)
+    arr = center_embedding(k + 1) @ arr
+    arr = arr.reshape(k + 1, *shape)
     arr = jnp.moveaxis(arr, 0, axis)
     return arr
 

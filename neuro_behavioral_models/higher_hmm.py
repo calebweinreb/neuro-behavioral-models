@@ -19,8 +19,8 @@ from dynamax.hidden_markov_model import (
 from .util import (
     simulate_hmm_states,
     gradient_descent,
-    remove_dof,
-    add_dof,
+    lower_dim,
+    raise_dim,
     sample_laplace,
 )
 from jax_moseq.utils.transitions import resample_hdp_transitions, init_hdp_transitions
@@ -61,9 +61,9 @@ def estimate_emission_params(
 ]:
     """Estimate emission parameters from transition counts."""
     logits = jnp.log(sufficient_stats + 1e-2)
-    emission_base_est = remove_dof(logits.mean(0), 1)
+    emission_base_est = lower_dim(logits.mean(0), 1)
     emission_biases_est = (logits - logits.mean(0)[na]).mean(1)
-    emission_biases_est = remove_dof(remove_dof(emission_biases_est, 1), 0)
+    emission_biases_est = lower_dim(lower_dim(emission_biases_est, 1), 0)
     return emission_base_est, emission_biases_est
 
 
@@ -72,8 +72,8 @@ def get_syllable_trans_probs(
     emission_biases: Float[Array, "n_states n_syllables-1"],
 ) -> Float[Array, "n_states n_syllables n_syllables"]:
     """Compute transition probabilities between syllables."""
-    emission_base = add_dof(emission_base, 1)
-    emission_biases = add_dof(add_dof(emission_biases, 0), 1)
+    emission_base = raise_dim(emission_base, 1)
+    emission_biases = raise_dim(raise_dim(emission_biases, 0), 1)
     logits = emission_base[na] + emission_biases[:, na]
     return softmax(logits, axis=-1)
 
@@ -272,6 +272,19 @@ def fit_gradient_descent(
     return params, log_joints
 
 
+def filtered_states(
+    data: dict,
+    params: dict,
+) -> Float[Array, "n_sessions n_timesteps n_states"]:
+    """Estimate filtered marginals of hidden states by forward filtering."""
+    n_states = params["trans_pi"].shape[0]
+    return jax.vmap(hmm_filter, in_axes=(None, None, 0))(
+        jnp.ones(n_states) / n_states,
+        params["trans_pi"],
+        obs_log_likelihoods(data, params),
+    ).filtered_probs
+
+
 def smoothed_states(
     data: dict,
     params: dict,
@@ -320,16 +333,14 @@ def random_params(
     seeds = jr.split(seed, 3)
 
     emission_base = (
-        jr.normal(seeds[0], shape=(n_syllables, n_syllables))
+        jr.normal(seeds[0], shape=(n_syllables, n_syllables - 1))
         * hypparams["emission_base_sigma"]
     )
-    emission_base = remove_dof(emission_base, 1)
 
     emission_biases = (
-        jr.normal(seeds[1], shape=(n_states, n_syllables))
+        jr.normal(seeds[1], shape=(n_states - 1, n_syllables - 1))
         * hypparams["emission_biases_sigma"]
     )
-    emission_biases = remove_dof(remove_dof(emission_biases, 1), 0)
 
     trans_betas, trans_probs = init_hdp_transitions(
         seeds[3],
@@ -455,8 +466,8 @@ def resample_emission_params(
         emission_base, emission_biases = args
         syllable_trans_probs = get_syllable_trans_probs(emission_base, emission_biases)
 
-        emission_base = add_dof(emission_base, 1)
-        emission_biases = add_dof(add_dof(emission_biases, 0), 1)
+        emission_base = raise_dim(emission_base, 1)
+        emission_biases = raise_dim(raise_dim(emission_biases, 0), 1)
         prior_log_prob = (
             norm.logpdf(emission_base / emission_base_sigma).sum()
             + norm.logpdf(emission_biases / emission_biases_sigma).sum()
