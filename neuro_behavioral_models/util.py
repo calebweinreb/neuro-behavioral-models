@@ -69,10 +69,13 @@ def normal_inverse_gamma_posterior(
     return mu, sigma
 
 
-def center_embedding(k: int) -> Float[Array, "k k-1"]:
-    """Generate an orthonormal matrix that embeds R^(k-1) into the space of 0-sum vectors in R^k."""
+def center_embedding(n: int) -> Float[Array, "n n-1"]:
+    """Generate an orthonormal matrix that embeds R^(n-1) into the space of 0-sum vectors in R^n."""
     # using numpy.linalg.svd because jax version crashes on windows
-    return jnp.linalg.svd(jnp.eye(k) - jnp.ones((k, k)) / k)[0][:, :-1]
+    X = jnp.tril(jnp.ones((n, n)), k=-1)[1:]
+    X = jnp.eye(n)[1:] - X / X.sum(1)[:, na]
+    X = X / jnp.sqrt((X**2).sum(1))[:, na]
+    return X.T
 
 
 def lower_dim(arr, axis=0):
