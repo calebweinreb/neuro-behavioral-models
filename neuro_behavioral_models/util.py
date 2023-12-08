@@ -250,7 +250,7 @@ def sample_laplace(
     """Sample using Laplace approximation."""
 
     # find the mode of the posterior
-    solver = jaxopt.LBFGS(fun=lambda x: -log_prob_fn(x))
+    solver = jaxopt.GradientDescent(fun=lambda x: -log_prob_fn(x))
     opt = solver.run(init_params)
     mode = opt.params
 
