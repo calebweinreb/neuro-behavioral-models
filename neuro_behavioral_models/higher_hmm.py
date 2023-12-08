@@ -18,7 +18,6 @@ from dynamax.hidden_markov_model import (
 
 from .util import (
     simulate_hmm_states,
-    gradient_descent,
     lower_dim,
     raise_dim,
     sample_laplace,
@@ -408,6 +407,8 @@ def resample_params(
         hypparams["n_syllables"],
         hypparams["emission_base_sigma"],
         hypparams["emission_biases_sigma"],
+        hypparams["emission_gd_iters"],
+        hypparams["emission_gd_lr"],
     )
     trans_betas, trans_probs = resample_hdp_transitions(
         seeds[2],
@@ -427,7 +428,7 @@ def resample_params(
     return params
 
 
-@partial(jax.jit, static_argnums=(4, 5))
+@partial(jax.jit, static_argnums=(4, 5, 8))
 def resample_emission_params(
     seed: Float[Array, "2"],
     syllables: Int[Array, "n_sessions n_timesteps"],
@@ -437,6 +438,8 @@ def resample_emission_params(
     n_syllables: int,
     emission_base_sigma: Float,
     emission_biases_sigma: Float,
+    gradient_descent_iters: Int = 100,
+    gradient_descent_lr: Float = 1e-3,
 ) -> Tuple[
     Float[Array, "n_syllables n_syllables-1"], Float[Array, "n_states n_syllables-1"]
 ]:
@@ -475,7 +478,12 @@ def resample_emission_params(
         syllables_log_prob = (jnp.log(syllable_trans_probs) * sufficient_stats).sum()
         return prior_log_prob + syllables_log_prob
 
+    init_emission_params = estimate_emission_params(sufficient_stats)
     emission_base, emission_biases = sample_laplace(
-        seed, log_prob_fn, estimate_emission_params(sufficient_stats)
+        seed,
+        log_prob_fn,
+        init_emission_params,
+        gradient_descent_iters,
+        gradient_descent_lr,
     )
     return emission_base, emission_biases

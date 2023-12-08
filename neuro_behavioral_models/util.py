@@ -2,7 +2,6 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax
 import optax
-import jaxopt
 import tqdm
 from tensorflow_probability.substrates.jax import distributions as tfd
 from jaxtyping import Array, Float, Int, PyTree, Bool
@@ -10,6 +9,7 @@ from typing import Tuple, Union, Callable
 from scipy.optimize import linear_sum_assignment
 from functools import partial
 from jax_moseq.utils import psd_inv
+from dynamax.utils.optimize import run_gradient_descent
 
 na = jnp.newaxis
 
@@ -95,42 +95,6 @@ def raise_dim(arr, axis=0):
     arr = arr.reshape(k + 1, *shape)
     arr = jnp.moveaxis(arr, 0, axis)
     return arr
-
-
-def gradient_descent(loss_fn, init_params, learning_rate=1e-3, num_iters=100):
-    """
-    Run gradient descent to minimize a loss function.
-
-    Args:
-        loss_fn: Objective function.
-        init_params: Initial value of parameters to be estimated.
-        optimizer: Optimizer.
-        num_iters: Number of iterations.
-
-    Returns:
-        params: Optimized parameters.
-        losses: Losses recorded at each epoch.
-    """
-    optimizer = optax.adam(learning_rate)
-    opt_state = optimizer.init(init_params)
-    loss_grad_fn = jax.value_and_grad(loss_fn)
-
-    @jax.jit
-    def train_step(params, opt_state):
-        loss, grads = loss_grad_fn(params)
-        updates, opt_state = optimizer.update(grads, opt_state)
-        params = optax.apply_updates(params, updates)
-        return params, opt_state, loss
-
-    losses = []
-    params = init_params
-    with tqdm.trange(num_iters) as pbar:
-        for i in pbar:
-            params, opt_state, loss = train_step(params, opt_state)
-            losses.append(loss.item())
-            pbar.set_postfix({"loss": loss.item()})
-
-    return params, jnp.array(losses)
 
 
 def sample_multinomial(
@@ -241,19 +205,22 @@ def sample_hmc(
     return params, kernel_state
 
 
-@partial(jax.jit, static_argnums=(1,))
 def sample_laplace(
     seed: Float[Array, "2"],
     log_prob_fn: Callable,
     init_params: PyTree,
+    gradient_descent_iters: Int = 200,
+    gradient_descent_lr: Float = 0.01,
 ) -> PyTree:
     """Sample using Laplace approximation."""
 
     # find the mode of the posterior
-    solver = jaxopt.GradientDescent(fun=lambda x: -log_prob_fn(x))
-    opt = solver.run(init_params)
-    mode = opt.params
-
+    mode, _, losses = run_gradient_descent(
+        lambda x: -log_prob_fn(x),
+        init_params,
+        num_mstep_iters=gradient_descent_iters,
+        optimizer=optax.adam(gradient_descent_lr),
+    )
     # calculate covariance matrix from hessian at mode
     mode, unravel_fn = jax.flatten_util.ravel_pytree(mode)
     ll_fn = lambda x: log_prob_fn(unravel_fn(x))

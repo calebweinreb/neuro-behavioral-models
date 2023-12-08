@@ -16,7 +16,6 @@ from .util import (
     sample_inv_gamma,
     simulate_hmm_states,
     sample_multinomial,
-    gradient_descent,
     normal_inverse_gamma_posterior,
     logits_to_probs,
     probs_to_logits,
