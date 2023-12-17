@@ -208,7 +208,7 @@ def fit_gibbs(
     params = init_params
     for _ in tqdm.trange(num_iters):
         seed, subseed = jr.split(seed)
-        params = resample_params(subseed, data, params, states, hypparams)
+        params, gd_losses = resample_params(subseed, data, params, states, hypparams)
         states, marginal_loglik = resample_states(seed, data, params, parallel)
         log_joints.append(marginal_loglik + log_params_prob(params, hypparams))
     return params, states, jnp.array(log_joints)
@@ -375,8 +375,9 @@ def resample_params(
     params: dict,
     states: Int[Array, "n_sessions n_timesteps"],
     hypparams: dict,
-) -> dict:
-    """Resample parameters from their posterior distribution.
+) -> Tuple[dict, Float[Array, "gradient_descent_iters"]]:
+    """Resample parameters from their posterior distribution. Emission parameters are
+    resampled using a Laplace approximation; the mode is found using gradient descent.
 
     Args:
         seed: random seed
@@ -387,10 +388,11 @@ def resample_params(
 
     Returns:
         params: parameters dictionary
+        losses: losses recorded during gradient descent
     """
     seeds = jr.split(seed, 2)
 
-    emission_params = resample_emission_params(
+    emission_params, gd_losses = resample_emission_params(
         seeds[1],
         data["syllables"],
         data["mask"],
@@ -417,7 +419,7 @@ def resample_params(
         "trans_pi": trans_probs,
         "trans_betas": trans_betas,
     }
-    return params
+    return params, gd_losses
 
 
 @partial(jax.jit, static_argnums=(4, 5, 8))
@@ -433,7 +435,11 @@ def resample_emission_params(
     gradient_descent_iters: Int = 100,
     gradient_descent_lr: Float = 1e-3,
 ) -> Tuple[
-    Float[Array, "n_syllables n_syllables-1"], Float[Array, "n_states n_syllables-1"]
+    Tuple[
+        Float[Array, "n_syllables n_syllables-1"],
+        Float[Array, "n_states n_syllables-1"],
+    ],
+    Float[Array, "gradient_descent_iters"],
 ]:
     """Resample emission parameters from their posterior distribution.
 
@@ -450,6 +456,7 @@ def resample_emission_params(
     Returns:
         emission_base: posterior emission base parameters
         emission_biases: posterior emission biases parameters
+        losses: losses recorded during gradient descent
     """
     sufficient_stats = (
         jnp.zeros((n_states, n_syllables, n_syllables))
@@ -471,11 +478,11 @@ def resample_emission_params(
         return prior_log_prob + syllables_log_prob
 
     init_emission_params = estimate_emission_params(sufficient_stats)
-    emission_base, emission_biases = sample_laplace(
+    (emission_base, emission_biases), losses = sample_laplace(
         seed,
         log_prob_fn,
         init_emission_params,
         gradient_descent_iters,
         gradient_descent_lr,
     )
-    return emission_base, emission_biases
+    return (emission_base, emission_biases), losses

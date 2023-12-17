@@ -214,8 +214,20 @@ def sample_laplace(
     init_params: PyTree,
     gradient_descent_iters: Int = 200,
     gradient_descent_lr: Float = 0.01,
-) -> PyTree:
-    """Sample using Laplace approximation."""
+) -> Tuple[PyTree, Float[Array, "gradient_descent_iters"]]:
+    """Sample using Laplace approximation. Uses gradient descent to find mode of posterior.
+
+    Args:
+        seed: random seed
+        log_prob_fn: log probability function
+        init_params: initial parameters
+        gradient_descent_iters: number of gradient descent iterations
+        gradient_descent_lr: gradient descent learning rate
+
+    Returns:
+        params: sampled parameters
+        losses: loss history
+    """
 
     # find the mode of the posterior
     mode, _, losses = run_gradient_descent(
@@ -232,4 +244,4 @@ def sample_laplace(
 
     # sample from laplace approximation
     x = jr.multivariate_normal(seed, mean=mode, cov=covariance_matrix)
-    return unravel_fn(x)
+    return unravel_fn(x), losses
