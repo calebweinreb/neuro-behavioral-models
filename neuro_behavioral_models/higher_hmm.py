@@ -142,16 +142,7 @@ def log_joint_prob(
     hypparams: dict,
 ) -> Float:
     """Compute the log joint probability of the data and parameters."""
-
-    # marginalize over states
-    n_states = params["trans_pi"].shape[0]
-    obs_log_prob = jax.vmap(hmm_filter, in_axes=(None, None, 0))(
-        jnp.ones(n_states) / n_states,
-        params["trans_pi"],
-        obs_log_likelihoods(data, params),
-    ).marginal_loglik.sum()
-
-    return obs_log_prob + log_params_prob(params, hypparams)
+    return marginal_loglik(data, params) + log_params_prob(params, hypparams)
 
 
 @partial(jax.jit, static_argnums=(3,))
@@ -271,17 +262,18 @@ def fit_gradient_descent(
     return params, log_joints
 
 
-def filtered_states(
+def marginal_loglik(
     data: dict,
     params: dict,
 ) -> Float[Array, "n_sessions n_timesteps n_states"]:
-    """Estimate filtered marginals of hidden states by forward filtering."""
+    """Estimate marginal log likelihood of the data"""
     n_states = params["trans_pi"].shape[0]
-    return jax.vmap(hmm_filter, in_axes=(None, None, 0))(
+    mll = jax.vmap(hmm_filter, in_axes=(None, None, 0))(
         jnp.ones(n_states) / n_states,
         params["trans_pi"],
         obs_log_likelihoods(data, params),
-    ).filtered_probs
+    ).marginal_loglik.sum()
+    return mll
 
 
 def smoothed_states(
