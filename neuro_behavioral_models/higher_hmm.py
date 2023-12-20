@@ -22,7 +22,6 @@ from .util import (
     raise_dim,
     sample_laplace,
 )
-from jax_moseq.utils.transitions import resample_hdp_transitions, init_hdp_transitions
 
 na = jnp.newaxis
 
@@ -37,16 +36,14 @@ states: (n_sessions, n_timesteps)
 params = {
     "emission_base": (n_syllables, n_syllables-1),
     "emission_biases": (n_states-1, n_syllables-1),
-    "trans_pi": (n_states, n_states),
-    "trans_betas": (n_states, n_states),
+    "trans_probs": (n_states, n_states),
 }
 
 hypparams = {
     "n_states": (,),
     "emission_base_sigma": (,),
     "emission_biases_sigma": (,),
-    "trans_gamma": (,),
-    "trans_alpha": (,),
+    "trans_beta": (,),
     "trans_kappa": (,),
     "n_syllables"
 }
@@ -84,7 +81,7 @@ def obs_log_likelihoods(
     """Compute log likelihoods of observations for each hidden state."""
 
     n_sessions = data["syllables"].shape[0]
-    n_states = params["trans_pi"].shape[0]
+    n_states = params["trans_probs"].shape[0]
 
     log_syllable_trans_probs = jnp.log(
         get_syllable_trans_probs(
@@ -108,7 +105,7 @@ def log_params_prob(
 ) -> Float:
     """Compute the log probability of the parameters based on their priors."""
 
-    n_states = params["trans_pi"].shape[0]
+    n_states = params["trans_probs"].shape[0]
 
     # prior on emission base parameters
     emission_base_log_prob = norm.logpdf(
@@ -121,19 +118,12 @@ def log_params_prob(
     ).sum()
 
     # prior on transition parameters
-    beta_conc = jnp.full(n_states, hypparams["trans_gamma"] / n_states)
-    beta_log_prob = dirichlet.logpdf(params["trans_betas"], beta_conc)
+    trans_probs_log_prob = jax.vmap(dirichlet.logpdf)(
+        params["trans_probs"],
+        jnp.eye(n_states) * hypparams["trans_kappa"] + hypparams["trans_beta"],
+    ).sum()
 
-    pi_conc = (
-        hypparams["trans_kappa"] * jnp.eye(n_states)
-        + hypparams["trans_alpha"] * params["trans_betas"]
-    )
-    pi = (params["trans_pi"] + 1e-8) / (params["trans_pi"] + 1e-8).sum(1)[:, None]
-    pi_log_prob = jax.vmap(dirichlet.logpdf)(pi, pi_conc).sum()
-
-    return (
-        emission_base_log_prob + emission_biases_log_prob + beta_log_prob + pi_log_prob
-    )
+    return emission_base_log_prob + emission_biases_log_prob + trans_probs_log_prob
 
 
 def log_joint_prob(
@@ -164,14 +154,14 @@ def resample_states(
         states: resampled hidden states
         marginal_loglik: marginal log likelihood of the data
     """
-    n_states = params["trans_pi"].shape[0]
+    n_states = params["trans_probs"].shape[0]
     seeds = jr.split(seed, data["syllables"].shape[0])
 
     sample_fn = parallel_hmm_posterior_sample if parallel else hmm_posterior_sample
     marginal_logliks, states = jax.vmap(sample_fn, in_axes=(0, None, None, 0))(
         seeds,
         jnp.ones(n_states) / n_states,
-        params["trans_pi"],
+        params["trans_probs"],
         obs_log_likelihoods(data, params),
     )
     return states, marginal_logliks.sum()
@@ -267,10 +257,10 @@ def marginal_loglik(
     params: dict,
 ) -> Float[Array, "n_sessions n_timesteps n_states"]:
     """Estimate marginal log likelihood of the data"""
-    n_states = params["trans_pi"].shape[0]
+    n_states = params["trans_probs"].shape[0]
     mll = jax.vmap(hmm_filter, in_axes=(None, None, 0))(
         jnp.ones(n_states) / n_states,
-        params["trans_pi"],
+        params["trans_probs"],
         obs_log_likelihoods(data, params),
     ).marginal_loglik.sum()
     return mll
@@ -281,10 +271,10 @@ def smoothed_states(
     params: dict,
 ) -> Float[Array, "n_sessions n_timesteps n_states"]:
     """Estimate marginals of hidden states using forward-backward algorithm."""
-    n_states = params["trans_pi"].shape[0]
+    n_states = params["trans_probs"].shape[0]
     return jax.vmap(hmm_smoother, in_axes=(None, None, 0))(
         jnp.ones(n_states) / n_states,
-        params["trans_pi"],
+        params["trans_probs"],
         obs_log_likelihoods(data, params),
     ).smoothed_probs
 
@@ -294,10 +284,10 @@ def predicted_states(
     params: dict,
 ) -> Float[Array, "n_sessions n_timesteps n_states"]:
     """Predict hidden states using Viterbi algorithm."""
-    n_states = params["trans_pi"].shape[0]
+    n_states = params["trans_probs"].shape[0]
     return jax.vmap(hmm_posterior_mode, in_axes=(None, None, 0))(
         jnp.ones(n_states) / n_states,
-        params["trans_pi"],
+        params["trans_probs"],
         obs_log_likelihoods(data, params),
     )
 
@@ -333,19 +323,15 @@ def random_params(
         * hypparams["emission_biases_sigma"]
     )
 
-    trans_betas, trans_probs = init_hdp_transitions(
-        seeds[3],
-        n_states,
-        hypparams["trans_alpha"],
-        hypparams["trans_kappa"],
-        hypparams["trans_gamma"],
+    trans_probs = jax.vmap(jr.dirichlet)(
+        jr.split(seeds[2], n_states),
+        jnp.eye(n_states) * hypparams["trans_kappa"] + hypparams["trans_beta"],
     )
 
     return {
         "emission_base": emission_base,
         "emission_biases": emission_biases,
-        "trans_pi": trans_probs,
-        "trans_betas": trans_betas,
+        "trans_probs": trans_probs,
     }
 
 
@@ -355,7 +341,7 @@ def simulate(seed, params, n_timesteps, n_sessions):
 
     states = jax.vmap(simulate_hmm_states, in_axes=(0, None, None))(
         jr.split(seeds[0], n_sessions),
-        params["trans_pi"],
+        params["trans_probs"],
         n_timesteps,
     )
     syllable_trans_probs = get_syllable_trans_probs(
@@ -404,20 +390,18 @@ def resample_params(
         hypparams["emission_gd_iters"],
         hypparams["emission_gd_lr"],
     )
-    trans_betas, trans_probs = resample_hdp_transitions(
+    trans_probs = resample_trans_probs(
         seeds[2],
-        states,
         data["mask"],
-        params["trans_betas"],
-        hypparams["trans_alpha"],
+        states,
+        hypparams["n_states"],
+        hypparams["trans_beta"],
         hypparams["trans_kappa"],
-        hypparams["trans_gamma"],
     )
     params = {
         "emission_base": emission_params[0],
         "emission_biases": emission_params[1],
-        "trans_pi": trans_probs,
-        "trans_betas": trans_betas,
+        "trans_probs": trans_probs,
     }
     return params, gd_losses
 
@@ -486,3 +470,36 @@ def resample_emission_params(
         gradient_descent_lr,
     )
     return (emission_base, emission_biases), losses
+
+
+@partial(jax.jit, static_argnums=(3,))
+def resample_trans_probs(
+    seed: Float[Array, "2"],
+    mask: Int[Array, "n_sessions n_timesteps"],
+    states: Int[Array, "n_sessions n_timesteps"],
+    n_states: int,
+    beta: Float,
+    kappa: Float,
+) -> Float[Array, "n_states n_states"]:
+    """Resample transition probabilities from their posterior distribution.
+
+    Args:
+        seed: random seed
+        mask: mask of valid observations
+        states: hidden states
+        n_states: number of hidden states
+        beta: Dirichlet concentration parameter
+        kappa: Dirichlet concentration parameter
+
+    Returns:
+        trans_probs: posterior transition probabilities
+    """
+    trans_counts = (
+        jnp.zeros((n_states, n_states))
+        .at[states[:, :-1], states[:, 1:]]
+        .add(mask[:, :-1])
+    )
+    trans_probs = jax.vmap(jr.dirichlet)(
+        jr.split(seed, n_states), trans_counts + beta + jnp.eye(n_states) * kappa
+    )
+    return trans_probs
